@@ -230,13 +230,18 @@
             transform: rotate(180deg);
         }
         
-        .piece.promoted {
+        .piece.promoted.sente {
             background: linear-gradient(135deg, #FFD700, #FFA500);
             color: #D00;
             border: 2px solid #FF6347;
         }
         
-        .piece.promoted.gote { transform: none; }
+        .piece.promoted.gote {
+            background: linear-gradient(135deg, #8B4513, #A0522D);
+            color: #FFD700;
+            border: 2px solid #FFD700;
+            transform: rotate(180deg);
+        }
         
         .controls {
             display: flex;
@@ -710,12 +715,175 @@
             document.getElementById('victoryModal').classList.remove('show');
         }
         
-        // === AI ===
+        // === AI評価システム ===
+        const PIECE_VALUES = {
+            '歩': 100, '香': 350, '桂': 400, '銀': 550, '金': 600,
+            '角': 900, '飛': 1000, '王': 50000,
+            'と': 650, '杏': 550, '圭': 550, '全': 600,
+            '馬': 1100, '龍': 1300
+        };
+        
+        // 位置評価テーブル（中央や敵陣に近いほど高評価）
+        function getPositionScore(piece, row, col, owner) {
+            if (owner === 'gote') {
+                // 後手の場合、敵陣（下側）に近いほど高評価
+                if (['歩', '香', '桂', '銀'].includes(piece.type)) {
+                    return (8 - row) * 10;  // 前進ボーナス
+                }
+                if (piece.type === '飛') {
+                    return col === 1 ? 20 : 0;  // 飛車は2筋が理想
+                }
+                if (piece.type === '角') {
+                    return Math.min(row, col, 8-row, 8-col) * 5;  // 中央ボーナス
+                }
+            }
+            return 0;
+        }
+        
+        // 盤面評価関数
+        function evaluateBoard() {
+            let score = 0;
+            
+            // 駒の価値計算
+            for (let r = 0; r < 9; r++) {
+                for (let c = 0; c < 9; c++) {
+                    const piece = board[r][c];
+                    if (piece) {
+                        const value = PIECE_VALUES[piece.type] + getPositionScore(piece, r, c, piece.owner);
+                        score += piece.owner === 'gote' ? value : -value;
+                    }
+                }
+            }
+            
+            // 持駒の価値
+            Object.entries(captured).forEach(([owner, pieces]) => {
+                pieces.forEach(piece => {
+                    const value = PIECE_VALUES[piece.type] * 0.9;  // 持駒は少し価値を下げる
+                    score += owner === 'gote' ? value : -value;
+                });
+            });
+            
+            // 王の安全性評価
+            for (let r = 0; r < 9; r++) {
+                for (let c = 0; c < 9; c++) {
+                    if (board[r][c]?.type === '王') {
+                        const owner = board[r][c].owner;
+                        // 王の周りに味方の駒があるか
+                        let defenders = 0;
+                        for (let dr = -1; dr <= 1; dr++) {
+                            for (let dc = -1; dc <= 1; dc++) {
+                                if (dr === 0 && dc === 0) continue;
+                                const nr = r + dr, nc = c + dc;
+                                if (inBounds(nr, nc) && board[nr][nc]?.owner === owner) {
+                                    defenders++;
+                                }
+                            }
+                        }
+                        score += (owner === 'gote' ? defenders : -defenders) * 50;
+                    }
+                }
+            }
+            
+            return score;
+        }
+        
+        // Minimaxアルゴリズム（アルファベータ枝刈り付き）
+        function minimax(depth, alpha, beta, maximizing) {
+            if (depth === 0) {
+                return evaluateBoard();
+            }
+            
+            const moves = getAllMoves(maximizing ? 'gote' : 'sente');
+            
+            if (maximizing) {
+                let maxEval = -Infinity;
+                for (const move of moves) {
+                    // 仮想的に手を実行
+                    const backup = makeVirtualMove(move);
+                    const eval = minimax(depth - 1, alpha, beta, false);
+                    undoVirtualMove(move, backup);
+                    
+                    maxEval = Math.max(maxEval, eval);
+                    alpha = Math.max(alpha, eval);
+                    if (beta <= alpha) break;  // 枝刈り
+                }
+                return maxEval;
+            } else {
+                let minEval = Infinity;
+                for (const move of moves) {
+                    const backup = makeVirtualMove(move);
+                    const eval = minimax(depth - 1, alpha, beta, true);
+                    undoVirtualMove(move, backup);
+                    
+                    minEval = Math.min(minEval, eval);
+                    beta = Math.min(beta, eval);
+                    if (beta <= alpha) break;  // 枝刈り
+                }
+                return minEval;
+            }
+        }
+        
+        // 仮想的な手の実行
+        function makeVirtualMove(move) {
+            if (move.drop) {
+                const piece = captured[turn][move.index];
+                const backup = { piece: JSON.parse(JSON.stringify(piece)), index: move.index };
+                board[move.to[0]][move.to[1]] = piece;
+                captured[turn].splice(move.index, 1);
+                turn = turn === 'sente' ? 'gote' : 'sente';
+                return backup;
+            } else {
+                const piece = board[move.from[0]][move.from[1]];
+                const target = board[move.to[0]][move.to[1]];
+                const backup = {
+                    piece: JSON.parse(JSON.stringify(piece)),
+                    target: target ? JSON.parse(JSON.stringify(target)) : null
+                };
+                
+                if (target) {
+                    const demoted = demote(JSON.parse(JSON.stringify(target)));
+                    demoted.owner = piece.owner;
+                    captured[piece.owner].push(demoted);
+                }
+                
+                board[move.to[0]][move.to[1]] = piece;
+                board[move.from[0]][move.from[1]] = null;
+                
+                // 成り判定（AIは70%の確率で成る）
+                if (canPromote(piece, move.from[0], move.to[0]) && Math.random() < 0.7) {
+                    promote(piece);
+                    backup.promoted = true;
+                }
+                
+                turn = turn === 'sente' ? 'gote' : 'sente';
+                return backup;
+            }
+        }
+        
+        // 仮想的な手を戻す
+        function undoVirtualMove(move, backup) {
+            turn = turn === 'sente' ? 'gote' : 'sente';
+            
+            if (move.drop) {
+                board[move.to[0]][move.to[1]] = null;
+                captured[turn].splice(backup.index, 0, backup.piece);
+            } else {
+                const piece = board[move.to[0]][move.to[1]];
+                if (backup.promoted) demote(piece);
+                board[move.from[0]][move.from[1]] = piece;
+                board[move.to[0]][move.to[1]] = backup.target;
+                if (backup.target) {
+                    captured[piece.owner].pop();
+                }
+            }
+        }
+        
+        // === メインAI関数 ===
         function aiMove() {
             const moves = getAllMoves('gote');
             if (moves.length === 0) return;
             
-            // ★王を取れる手を最優先★
+            // 王を取れる手を最優先
             const kingCapture = moves.find(m => {
                 if (m.drop) return false;
                 const target = board[m.to[0]][m.to[1]];
@@ -728,31 +896,76 @@
                 return;
             }
             
-            // 通常のAI処理
-            let move;
+            let selectedMove;
+            
             if (difficulty === 'easy') {
-                move = moves[Math.floor(Math.random() * moves.length)];
+                // 初級：ランダムに手を選ぶが、明らかに良い手（駒得）は優先
+                const captureMoves = moves.filter(m => !m.drop && board[m.to[0]][m.to[1]]);
+                if (captureMoves.length > 0 && Math.random() < 0.7) {
+                    selectedMove = captureMoves[Math.floor(Math.random() * captureMoves.length)];
+                } else {
+                    selectedMove = moves[Math.floor(Math.random() * moves.length)];
+                }
+            } else if (difficulty === 'normal') {
+                // 中級：深さ2のMinimax
+                let bestScore = -Infinity;
+                let bestMoves = [];
+                
+                for (const move of moves) {
+                    const backup = makeVirtualMove(move);
+                    const score = minimax(2, -Infinity, Infinity, false);
+                    undoVirtualMove(move, backup);
+                    
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestMoves = [move];
+                    } else if (score === bestScore) {
+                        bestMoves.push(move);
+                    }
+                }
+                
+                // 同じ評価の手からランダムに選択
+                selectedMove = bestMoves[Math.floor(Math.random() * bestMoves.length)];
             } else {
-                const values = {'歩':1,'香':3,'桂':3,'銀':5,'金':6,'角':8,'飛':10,'と':7,'杏':6,'圭':6,'全':6,'馬':10,'龍':12};
+                // 上級：深さ3のMinimaxとアルファベータ枝刈り
+                let bestScore = -Infinity;
+                let bestMoves = [];
+                
+                // 手を事前評価してソート（枝刈り効率向上）
                 moves.sort((a, b) => {
                     let scoreA = 0, scoreB = 0;
                     if (!a.drop) {
                         const targetA = board[a.to[0]][a.to[1]];
-                        if (targetA) scoreA += values[targetA.type] || 0;
+                        if (targetA) scoreA = PIECE_VALUES[targetA.type];
                     }
                     if (!b.drop) {
                         const targetB = board[b.to[0]][b.to[1]];
-                        if (targetB) scoreB += values[targetB.type] || 0;
+                        if (targetB) scoreB = PIECE_VALUES[targetB.type];
                     }
                     return scoreB - scoreA;
                 });
-                move = moves[0];
+                
+                for (const move of moves) {
+                    const backup = makeVirtualMove(move);
+                    const score = minimax(3, -Infinity, Infinity, false);
+                    undoVirtualMove(move, backup);
+                    
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestMoves = [move];
+                    } else if (score === bestScore) {
+                        bestMoves.push(move);
+                    }
+                }
+                
+                selectedMove = bestMoves[Math.floor(Math.random() * bestMoves.length)];
             }
             
-            if (move.drop) {
-                drop(move.index, move.to);
+            // 手を実行
+            if (selectedMove.drop) {
+                drop(selectedMove.index, selectedMove.to);
             } else {
-                executeMove(move.from, move.to, true);
+                executeMove(selectedMove.from, selectedMove.to, true);
             }
         }
         
@@ -813,8 +1026,11 @@
                         pieceEl.className = `piece ${piece.owner}`;
                         pieceEl.textContent = piece.type;
                         
-                        if (['龍','馬','と','全','圭','杏'].includes(piece.type)) {
+                        // 成り駒の判定と適切なクラス付与
+                        const promotedPieces = ['龍','馬','と','全','圭','杏'];
+                        if (promotedPieces.includes(piece.type)) {
                             pieceEl.classList.add('promoted');
+                            // 所有者に応じてクラスを追加（CSSで見た目を制御）
                         }
                         
                         cell.appendChild(pieceEl);
