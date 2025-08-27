@@ -14,7 +14,7 @@
 
 ## 🎵 BGMについて
 
-written by 蒲鉾さちこ
+written by 蒲鉾さちこ様
 
 ## 📝 ライセンス
 
