@@ -27,7 +27,7 @@ BGMファイル（bgm.mp3）は以下の無料音楽サイトから入手でき�
 
 ## 🚀 デモ
 
-[ここでプレイ](https://YOUR-USERNAME.github.io/shogi-game/)
+[ここでプレイ](https://nneeeoooo.github.io/shogi-game/)
 
 ## 📝 ライセンス
 
